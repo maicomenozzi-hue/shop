@@ -1,0 +1,543 @@
+import os
+import json
+from flask import Flask, render_template, request, redirect, url_for, session, flash
+
+app = Flask(__name__)
+app.secret_key = "session_security_key_dnd"  # Chiave di sessione di base
+
+USERS_FILE = "users.json"
+ITEMS_FILE = "items.json"
+
+# --- DATI PREDEFINITI (Generati automaticamente se i file JSON non esistono) ---
+
+DEFAULT_USERS = {
+    "master": {
+        "password": "masterpassword",
+        "role": "admin",
+        "coins": 0,
+        "inventory": [],
+        "avatar": "https://img.icons8.com/color/96/dungeon.png"
+    },
+    "gandalf": {
+        "password": "wizardpassword",
+        "role": "player",
+        "coins": 150,
+        "inventory": [],
+        "avatar": "https://img.icons8.com/color/96/wizard.png"
+    },
+    "conan": {
+        "password": "barbarianpassword",
+        "role": "player",
+        "coins": 300,
+        "inventory": [],
+        "avatar": "https://img.icons8.com/color/96/barbarian.png"
+    }
+}
+
+DEFAULT_ITEMS = [
+    {
+        "id": "1",
+        "name": "Pozione di Cura Leggera",
+        "description": "Recupera 2d4+2 Punti Ferita.",
+        "price": 50
+    },
+    {
+        "id": "2",
+        "name": "Spada Lunga",
+        "description": "Un'arma versatile e affilata, infligge 1d8 danni taglienti.",
+        "price": 15
+    }
+]
+
+# --- DICHIARAZIONE DELLE PAGINE HTML ---
+
+TEMPLATES = {
+    "login.html": """
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>D&D Shop - Accedi</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-950 text-gray-100 flex items-center justify-center h-screen">
+    <div class="bg-gray-900 p-8 rounded-lg shadow-lg border border-yellow-600/30 max-w-sm w-full mx-4">
+        <h1 class="text-3xl font-bold text-center text-yellow-500 mb-6">D&D Tavern Shop</h1>
+        
+        {% with messages = get_flashed_messages(with_categories=true) %}
+          {% if messages %}
+            {% for category, message in messages %}
+              <div class="p-3 mb-4 text-sm text-red-400 bg-red-900/30 border border-red-500 rounded">{{ message }}</div>
+            {% endfor %}
+          {% endif %}
+        {% endwith %}
+
+        <form action="/login" method="POST" class="space-y-4">
+            <div>
+                <label class="block text-sm font-medium mb-1">Nome PG / Master</label>
+                <input type="text" name="username" required class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white focus:outline-none focus:border-yellow-500">
+            </div>
+            <div>
+                <label class="block text-sm font-medium mb-1">Parola d'Ordine</label>
+                <input type="password" name="password" required class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white focus:outline-none focus:border-yellow-500">
+            </div>
+            <button type="submit" class="w-full bg-yellow-600 hover:bg-yellow-700 text-black font-bold py-2 rounded transition">Entra in Taverna</button>
+        </form>
+    </div>
+</body>
+</html>
+""",
+
+    "shop.html": """
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>D&D Shop - Negozio</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-950 text-gray-100 pb-24">
+    <header class="bg-gray-900 border-b border-gray-800 p-4 sticky top-0 z-40 flex justify-between items-center">
+        <div>
+            <h2 class="text-lg font-bold text-yellow-500 capitalize">{{ user.username }}</h2>
+            <p class="text-xs text-gray-400">Ruolo: {{ 'Master' if user.role == 'admin' else 'Avventuriero' }}</p>
+        </div>
+        <div class="text-right">
+            <span class="text-yellow-400 font-bold text-xl">{{ user.coins }} <span class="text-sm">MO</span></span>
+        </div>
+    </header>
+
+    <main class="p-4 max-w-lg mx-auto">
+        <h3 class="text-2xl font-serif text-yellow-600 mb-4 text-center">Oggetti in Vendita</h3>
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+          {% if messages %}
+            {% for category, message in messages %}
+              <div class="p-3 mb-4 text-sm {% if category == 'success' %}text-green-400 bg-green-900/30 border-green-500{% else %}text-red-400 bg-red-900/30 border-red-500{% endif %} border rounded">{{ message }}</div>
+            {% endfor %}
+          {% endif %}
+        {% endwith %}
+
+        <div class="space-y-4">
+            {% for item in items %}
+            <div class="bg-gray-900 p-4 rounded-lg border border-gray-800 flex justify-between items-center">
+                <div class="flex-1 pr-4">
+                    <h4 class="font-bold text-yellow-500">{{ item.name }}</h4>
+                    <p class="text-sm text-gray-400 mt-1">{{ item.description }}</p>
+                    <span class="inline-block mt-2 text-yellow-400 font-mono text-sm bg-yellow-950/40 px-2 py-0.5 rounded border border-yellow-800/30">{{ item.price }} MO</span>
+                </div>
+                <div>
+                    {% if user.role != 'admin' %}
+                    <form action="/buy/{{ item.id }}" method="POST">
+                        <button type="submit" class="bg-yellow-600 hover:bg-yellow-700 text-black font-bold px-3 py-1.5 rounded text-sm transition">Compra</button>
+                    </form>
+                    {% else %}
+                    <span class="text-xs text-gray-500 italic">Solo PG</span>
+                    {% endif %}
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </main>
+
+    <nav class="fixed bottom-0 left-0 right-0 bg-gray-900 border-t border-gray-800 py-3 flex justify-around items-center z-50">
+        <a href="/" class="flex flex-col items-center text-yellow-500 text-xs font-semibold">
+            <span class="text-xl">🎒</span>
+            <span>Negozio</span>
+        </a>
+        <a href="/inventory" class="flex flex-col items-center text-gray-400 hover:text-yellow-500 text-xs font-semibold">
+            <span class="text-xl">⚔️</span>
+            <span>Inventario</span>
+        </a>
+        {% if user.role == 'admin' %}
+        <a href="/admin" class="flex flex-col items-center text-gray-400 hover:text-yellow-500 text-xs font-semibold">
+            <span class="text-xl">⚙️</span>
+            <span>Gestione</span>
+        </a>
+        {% endif %}
+        <a href="/profile" class="flex flex-col items-center">
+            <img src="{{ user.avatar }}" alt="Profilo" class="w-9 h-9 rounded-full border-2 border-yellow-500 hover:scale-105 transition duration-150">
+            <span class="text-[10px] text-gray-400 mt-0.5">Profilo</span>
+        </a>
+    </nav>
+</body>
+</html>
+""",
+
+    "inventory.html": """
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>D&D Shop - Inventario</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-950 text-gray-100 pb-24">
+    <header class="bg-gray-900 border-b border-gray-800 p-4 sticky top-0 z-40 flex justify-between items-center">
+        <div>
+            <h2 class="text-lg font-bold text-yellow-500 capitalize">{{ user.username }}</h2>
+            <p class="text-xs text-gray-400">I tuoi averi</p>
+        </div>
+        <div class="text-right">
+            <span class="text-yellow-400 font-bold text-xl">{{ user.coins }} MO</span>
+        </div>
+    </header>
+
+    <main class="p-4 max-w-lg mx-auto">
+        <h3 class="text-2xl font-serif text-yellow-600 mb-4 text-center">Il Tuo Inventario</h3>
+        
+        {% if not user.inventory %}
+        <div class="bg-gray-900 p-6 rounded-lg text-center border border-gray-800">
+            <p class="text-gray-400">La tua borsa è vuota.</p>
+            <p class="text-xs text-gray-600 mt-1">Acquista degli oggetti nel negozio.</p>
+        </div>
+        {% else %}
+        <div class="space-y-3">
+            {% for item in user.inventory %}
+            <div class="bg-gray-900 p-3 rounded border border-gray-800">
+                <h4 class="font-bold text-gray-200">{{ item.name }}</h4>
+                <p class="text-xs text-gray-400">{{ item.description }}</p>
+            </div>
+            {% endfor %}
+        </div>
+        {% endif %}
+    </main>
+
+    <nav class="fixed bottom-0 left-0 right-0 bg-gray-900 border-t border-gray-800 py-3 flex justify-around items-center z-50">
+        <a href="/" class="flex flex-col items-center text-gray-400 hover:text-yellow-500 text-xs font-semibold">
+            <span class="text-xl">🎒</span>
+            <span>Negozio</span>
+        </a>
+        <a href="/inventory" class="flex flex-col items-center text-yellow-500 text-xs font-semibold">
+            <span class="text-xl">⚔️</span>
+            <span>Inventario</span>
+        </a>
+        {% if user.role == 'admin' %}
+        <a href="/admin" class="flex flex-col items-center text-gray-400 hover:text-yellow-500 text-xs font-semibold">
+            <span class="text-xl">⚙️</span>
+            <span>Gestione</span>
+        </a>
+        {% endif %}
+        <a href="/profile" class="flex flex-col items-center">
+            <img src="{{ user.avatar }}" alt="Profilo" class="w-9 h-9 rounded-full border-2 border-yellow-500 hover:scale-105 transition duration-150">
+            <span class="text-[10px] text-gray-400 mt-0.5">Profilo</span>
+        </a>
+    </nav>
+</body>
+</html>
+""",
+
+    "profile.html": """
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>D&D Shop - Profilo</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-950 text-gray-100 pb-24">
+    <main class="p-6 max-w-sm mx-auto mt-10">
+        <div class="bg-gray-900 rounded-lg p-6 border border-gray-800 shadow-xl text-center">
+            <div class="flex justify-center mb-4">
+                <img src="{{ user.avatar }}" alt="Avatar" class="w-24 h-24 rounded-full border-4 border-yellow-600 shadow-lg shadow-yellow-600/10">
+            </div>
+            <h2 class="text-2xl font-serif text-yellow-500 capitalize">{{ user.username }}</h2>
+            <p class="text-sm text-gray-400 capitalize mb-4">Ruolo: {{ 'Master' if user.role == 'admin' else 'Avventuriero' }}</p>
+
+            <div class="bg-gray-950 p-3 rounded border border-gray-800 mb-6 flex justify-around">
+                <div>
+                    <span class="block text-xs text-gray-500">Monete</span>
+                    <span class="font-bold text-yellow-400">{{ user.coins }} MO</span>
+                </div>
+                <div class="border-r border-gray-800"></div>
+                <div>
+                    <span class="block text-xs text-gray-500">Oggetti</span>
+                    <span class="font-bold text-gray-300">{{ user.inventory|length if user.role != 'admin' else '∞' }}</span>
+                </div>
+            </div>
+
+            <a href="/logout" class="block w-full text-center bg-red-900/30 border border-red-700 hover:bg-red-800 hover:text-white text-red-400 font-bold py-2 rounded transition text-sm">Esci dalla Taverna</a>
+        </div>
+    </main>
+
+    <nav class="fixed bottom-0 left-0 right-0 bg-gray-900 border-t border-gray-800 py-3 flex justify-around items-center z-50">
+        <a href="/" class="flex flex-col items-center text-gray-400 hover:text-yellow-500 text-xs font-semibold">
+            <span class="text-xl">🎒</span>
+            <span>Negozio</span>
+        </a>
+        <a href="/inventory" class="flex flex-col items-center text-gray-400 hover:text-yellow-500 text-xs font-semibold">
+            <span class="text-xl">⚔️</span>
+            <span>Inventario</span>
+        </a>
+        {% if user.role == 'admin' %}
+        <a href="/admin" class="flex flex-col items-center text-gray-400 hover:text-yellow-500 text-xs font-semibold">
+            <span class="text-xl">⚙️</span>
+            <span>Gestione</span>
+        </a>
+        {% endif %}
+        <a href="/profile" class="flex flex-col items-center">
+            <img src="{{ user.avatar }}" alt="Profilo" class="w-9 h-9 rounded-full border-2 border-yellow-500 hover:scale-105 transition duration-150">
+            <span class="text-[10px] text-yellow-500 mt-0.5">Profilo</span>
+        </a>
+    </nav>
+</body>
+</html>
+""",
+
+    "admin.html": """
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>D&D Shop - Gestione Master</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-950 text-gray-100 pb-24">
+    <header class="bg-gray-900 border-b border-gray-800 p-4 sticky top-0 z-40">
+        <h2 class="text-lg font-bold text-yellow-500">Pannello del Master</h2>
+        <p class="text-xs text-gray-400">Controllo di monete e inventari</p>
+    </header>
+
+    <main class="p-4 max-w-lg mx-auto space-y-6">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+          {% if messages %}
+            {% for category, message in messages %}
+              <div class="p-3 text-sm {% if category == 'success' %}text-green-400 bg-green-900/30 border-green-500{% else %}text-red-400 bg-red-900/30 border-red-500{% endif %} border rounded">{{ message }}</div>
+            {% endfor %}
+          {% endif %}
+        {% endwith %}
+
+        <section class="bg-gray-900 p-4 rounded-lg border border-gray-800">
+            <h3 class="text-xl font-serif text-yellow-500 mb-4">Modifica Forziere dei PG</h3>
+            <form action="/admin" method="POST" class="space-y-3">
+                <input type="hidden" name="action" value="update_coins">
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Seleziona Personaggio</label>
+                    <select name="target_pg" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-white">
+                        {% for username, data in players.items() %}
+                        <option value="{{ username }}">{{ username|capitalize }} (Attuali: {{ data.coins }} MO)</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Quantità di Monete (es: "100" per dare, "-50" per togliere)</label>
+                    <input type="number" name="amount" required placeholder="Esempio: 50 o -50" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-white">
+                </div>
+                <button type="submit" class="w-full bg-yellow-600 hover:bg-yellow-700 text-black font-bold py-2 rounded text-sm transition">Aggiorna Monete</button>
+            </form>
+        </section>
+
+        <section class="bg-gray-900 p-4 rounded-lg border border-gray-800">
+            <h3 class="text-xl font-serif text-yellow-500 mb-4">Aggiungi Oggetto in Vetrina</h3>
+            <form action="/admin" method="POST" class="space-y-3">
+                <input type="hidden" name="action" value="add_item">
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Nome Oggetto</label>
+                    <input type="text" name="name" required class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-white">
+                </div>
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Descrizione</label>
+                    <textarea name="description" required class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-white h-20"></textarea>
+                </div>
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Prezzo (MO)</label>
+                    <input type="number" min="0" name="price" required class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-white">
+                </div>
+                <button type="submit" class="w-full bg-yellow-600 hover:bg-yellow-700 text-black font-bold py-2 rounded text-sm transition">Crea Oggetto</button>
+            </form>
+        </section>
+    </main>
+
+    <nav class="fixed bottom-0 left-0 right-0 bg-gray-900 border-t border-gray-800 py-3 flex justify-around items-center z-50">
+        <a href="/" class="flex flex-col items-center text-gray-400 hover:text-yellow-500 text-xs font-semibold">
+            <span class="text-xl">🎒</span>
+            <span>Negozio</span>
+        </a>
+        <a href="/inventory" class="flex flex-col items-center text-gray-400 hover:text-yellow-500 text-xs font-semibold">
+            <span class="text-xl">⚔️</span>
+            <span>Inventario</span>
+        </a>
+        {% if user.role == 'admin' %}
+        <a href="/admin" class="flex flex-col items-center text-yellow-500 text-xs font-semibold">
+            <span class="text-xl">⚙️</span>
+            <span>Gestione</span>
+        </a>
+        {% endif %}
+        <a href="/profile" class="flex flex-col items-center">
+            <img src="{{ user.avatar }}" alt="Profilo" class="w-9 h-9 rounded-full border-2 border-yellow-500 hover:scale-105 transition duration-150">
+            <span class="text-[10px] text-gray-400 mt-0.5">Profilo</span>
+        </a>
+    </nav>
+</body>
+</html>
+"""
+}
+
+# --- FUNZIONI DI INIZIALIZZAZIONE E GENERAZIONE AUTOMATICA ---
+
+def setup_environment():
+    # Crea cartella templates se non esiste
+    os.makedirs("templates", exist_ok=True)
+    
+    # Scrive i template HTML all'interno della cartella
+    for name, content in TEMPLATES.items():
+        filepath = os.path.join("templates", name)
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(content.strip())
+            
+    # Inizializza i file JSON se non esistono
+    if not os.path.exists(USERS_FILE):
+        with open(USERS_FILE, "w", encoding="utf-8") as f:
+            json.dump(DEFAULT_USERS, f, indent=4, ensure_ascii=False)
+            
+    if not os.path.exists(ITEMS_FILE):
+        with open(ITEMS_FILE, "w", encoding="utf-8") as f:
+            json.dump(DEFAULT_ITEMS, f, indent=4, ensure_ascii=False)
+
+# Esegui il setup prima di definire le rotte
+setup_environment()
+
+# --- LOGICA DEL BACKEND ---
+
+def load_json(filepath):
+    with open(filepath, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def save_json(filepath, data):
+    with open(filepath, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
+
+def get_current_user():
+    if "username" in session:
+        users = load_json(USERS_FILE)
+        user = users.get(session["username"])
+        if user:
+            user["username"] = session["username"]
+            return user
+    return None
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "POST":
+        username = request.form.get("username").strip().lower()
+        password = request.form.get("password")
+        
+        users = load_json(USERS_FILE)
+        if username in users and users[username]["password"] == password:
+            session["username"] = username
+            session["role"] = users[username]["role"]
+            return redirect(url_for("shop"))
+        else:
+            flash("Credenziali non corrette", "error")
+    return render_template("login.html")
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
+
+@app.route("/")
+def shop():
+    user = get_current_user()
+    if not user:
+        return redirect(url_for("login"))
+    
+    items = load_json(ITEMS_FILE)
+    return render_template("shop.html", user=user, items=items)
+
+@app.route("/buy/<item_id>", methods=["POST"])
+def buy_item(item_id):
+    user = get_current_user()
+    if not user or user["role"] == "admin":
+        return redirect(url_for("login"))
+    
+    items = load_json(ITEMS_FILE)
+    users = load_json(USERS_FILE)
+    
+    item = next((i for i in items if i["id"] == item_id), None)
+    if not item:
+        flash("Oggetto non trovato.", "error")
+        return redirect(url_for("shop"))
+    
+    username = user["username"]
+    player_data = users[username]
+    
+    if player_data["coins"] >= item["price"]:
+        player_data["coins"] -= item["price"]
+        player_data["inventory"].append(item)
+        save_json(USERS_FILE, users)
+        flash(f"Hai acquistato {item['name']}!", "success")
+    else:
+        flash("Non hai abbastanza monete d'oro!", "error")
+        
+    return redirect(url_for("shop"))
+
+@app.route("/inventory")
+def inventory():
+    user = get_current_user()
+    if not user:
+        return redirect(url_for("login"))
+    return render_template("inventory.html", user=user)
+
+@app.route("/profile")
+def profile():
+    user = get_current_user()
+    if not user:
+        return redirect(url_for("login"))
+    return render_template("profile.html", user=user)
+
+@app.route("/admin", methods=["GET", "POST"])
+def admin_panel():
+    user = get_current_user()
+    if not user or user["role"] != "admin":
+        flash("Accesso negato.", "error")
+        return redirect(url_for("shop"))
+    
+    users = load_json(USERS_FILE)
+    items = load_json(ITEMS_FILE)
+    
+    if request.method == "POST":
+        action = request.form.get("action")
+        
+        if action == "update_coins":
+            target_pg = request.form.get("target_pg")
+            try:
+                amount = int(request.form.get("amount"))
+                if target_pg in users:
+                    users[target_pg]["coins"] += amount
+                    if users[target_pg]["coins"] < 0:
+                        users[target_pg]["coins"] = 0
+                    save_json(USERS_FILE, users)
+                    flash(f"Monete di {target_pg} modificate con successo.", "success")
+            except ValueError:
+                flash("Inserisci un numero valido.", "error")
+                
+        elif action == "add_item":
+            name = request.form.get("name")
+            desc = request.form.get("description")
+            try:
+                price = int(request.form.get("price"))
+                new_id = str(len(items) + 1)
+                items.append({
+                    "id": new_id,
+                    "name": name,
+                    "description": desc,
+                    "price": price
+                })
+                save_json(ITEMS_FILE, items)
+                flash(f"Oggetto '{name}' aggiunto al negozio.", "success")
+            except ValueError:
+                flash("Prezzo non valido.", "error")
+                
+        return redirect(url_for("admin_panel"))
+
+    players = {k: v for k, v in users.items() if v["role"] == "player"}
+    return render_template("admin.html", user=user, players=players, items=items)
+
+if __name__ == "__main__":
+    app.run(debug=True)
